@@ -3,10 +3,10 @@
 #######################
 #   TEST ENVIRONMENT  #
 #######################
-NDO_IP = "10.49.217.41"
+NDO_IP = "10.10.10.10"
 NDO_DOM = "local"
 NDO_USR = "admin"
-NDO_PWD = "C1sco123"
+NDO_PWD = "password123"
 
 #######################
 #   PROD ENVIRONMENT  #
