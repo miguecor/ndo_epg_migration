@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 
-import aiohttp
 import argparse
-import asyncio
 import json
 import logging
 import os.path
