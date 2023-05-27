@@ -1,0 +1,12 @@
+# Exclude these files:
+.python-version
+*.xlsx
+*.xlsx.bckp
+*.json
+
+# Do not exclude these files:
+!template.xlsx
+
+
+# Exclude all folders:
+*/
