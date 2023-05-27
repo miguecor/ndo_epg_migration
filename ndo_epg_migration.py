@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
+import aiohttp
 import argparse
+import asyncio
 import json
 import logging
 import os.path
@@ -159,6 +161,7 @@ def patch_ndo_tmpl_bds(session: Session, data: dict, bdRef="", oper="", **kwargs
                     "path": "/templates/%s/bds/%s" % (templ_name, data['name'])}]
 
     response = session.patch(url + api, data=json.dumps(payload), **kwargs)
+    print(response.text)
     response.raise_for_status()
     log.info("Template BD patch %s operation returned status code %s" % (oper, response.status_code))
     return response
@@ -195,11 +198,8 @@ def patch_ndo_tmpl_epgs(session: Session, data: dict, epgRef="", oper="", **kwar
     if oper not in allowed_ops:
         raise ValueError("Unsupported PATCH operation")
     schema_id = epgRef.split("/")[2]
-    print(schema_id)
     templ_name = epgRef.split("/")[4]
-    print(templ_name)
     anp_name = epgRef.split("/")[6]
-    print(anp_name)
     url = "https://%s" % NDO_IP
     api = "/mso/api/v1/schemas/%s" % schema_id
     payload = []
@@ -208,11 +208,9 @@ def patch_ndo_tmpl_epgs(session: Session, data: dict, epgRef="", oper="", **kwar
         payload = [{"op": "add",
                     "path": "/templates/%s/anps/%s/epgs/-" % (templ_name, anp_name),
                     "value": data}]
-        print(payload)
     elif oper == "remove":
         payload = [{"op": "remove",
                     "path": "/templates/%s/anps/%s/epgs/%s" % (templ_name, anp_name, data['name'])}]
-        print(payload)
 
     response = session.patch(url + api, data=json.dumps(payload), **kwargs)
     response.raise_for_status()
@@ -785,56 +783,65 @@ def main(*args, **kwargs):
 
     elif parser.put:
         filename = parser.filename
+        sheetname = "EPG Selection"
+        # Try to load the workbook with name 'filename'
+        # If the file doesn't exist or doesn't contain a sheet named 'EPG Selection', the program will end.
         try:
             workbook = load_workbook(filename, data_only=True)
+            sheet = workbook[sheetname]
         except FileNotFoundError as e:
             log.error("%s file not found in the local directory. If necessary run the script with the -g option "
                       "to generate a migration file" % filename)
             sys.exit()
-        sheet = workbook['EPG Selection']
+        except KeyError as e:
+            log.error("%s sheet does not exist in %s" % (sheetname, filename))
+            sys.exit()
 
+        # Templates for the NDO objects that will be used
         ndo_bd_tmpl_dict = {
             "arpFlood": None, "description": "", "dhcpLabels": [], "displayName": "", "intersiteBumTrafficAllow": None,
             "l2Stretch": None, "l2UnknownUnicast": "", "l3MCast": None, "multiDstPktAct": "", "name": "",
             "optimizeWanBandwidth": None, "subnets": [], "unicastRouting": None, "unkMcastAct": "",
             "v6unkMcastAct": "","vmac": "", "vrfRef": ""
         }
-
         ndo_bd_site_dict = {
             "bdRef": "", "hostBasedRouting": None, "l3OutRefs": [], "l3Outs": [], "mac": "", "subnets": []
         }
-
         ndo_epg_tmpl_dict = {
             "bdRef": "", "contractRelationships": [], "description": "", "displayName": "", "epgType": "",
             "intraEpg": "", "mCastSource": None, "name": "", "preferredGroup": None, "proxyArp": None, "selectors": [],
             "subnets": [], "uSegAttrs": [], "uSegEpg": None
         }
-
         ndo_epg_site_dict = {
             "domainAssociations": [], "epgRef": "", "selectors": [], "staticLeafs": [], "staticPorts": [],
             "subnets": [], "uSegAttrs": []
         }
 
+        # Keys to replace the column names in the Excel file to make them look like the keys used by the NDO objects
         src_data_keys = [
             "siteName", "siteId", "tenantName", "tenantId", "schemaName", "schemaId", "templName", "templId",
             "templVal", "siteVal", "vrfRef", "vrfName", "bdName", "bdUUID", "bdRef", "bdTemplId", "bdL2Stretch",
             "bdTemplSubnet", "bdSiteId", "bdSiteSubnet", "bdVrfRef", "anpName", "anpUUID", "anpRef", "anpTemplId",
             "anpSiteId", "epgName", "epgUUID", "epgRef", "epgTemplId", "epgSiteId"
         ]
-
         dst_data_keys = [
             "siteName", "siteId", "tenantName", "tenantId", "schemaName", "schemaId", "templName", "templId",
             "templVal", "siteVal", "vrfRef", "vrfName", "bdName", "bdL2Stretch", "bdL3Out1", "bdL3OutRef1", "bdL3Out2",
             "bdL3OutRef2", "anpName", "anpRef", "anpId", "epgName", "consContract"
         ]
 
+        # Variable definition
         src_epgs = []
         dst_epgs = []
+        src_bd_tmpl_data = {}
+        src_bd_site_data = {}
+        src_epg_tmpl_data = {}
+        src_epg_site_data = {}
 
         # Get the Source EPG column names
         columns = [key for key in src_data_keys]
 
-        # Iterate over each row in the sheet
+        # Iterate over each row in the sheet starting from row 303 and finishing on row 343
         for row in sheet.iter_rows(min_row=303, max_row=343, max_col=31, values_only=True):
             # Create a dictionary to store the row data
             src_data = dict(zip(columns, row))
@@ -844,140 +851,201 @@ def main(*args, **kwargs):
         # Get the Destination EPG column names
         columns = [key for key in dst_data_keys]
 
-        # Iterate over each row in the sheet
+        # Iterate over each row in the sheet starting from row 349 and finishing on row 389
         for row in sheet.iter_rows(min_row=349, max_row=389, max_col=23, values_only=True):
             # Create a dictionary to store the row data
             dst_data = dict(zip(columns, row))
             if dst_data['siteName'] is not None:
                 dst_epgs.append(dst_data)
 
+        # Get an NDO session token
         session = get_ndo_session(**kwargs)
+        # Get all the schemas information
         ndo_schemas = get_ndo_schemas(session, **kwargs)
         ndo_schemas_json = ndo_schemas.json()
 
-        for schema in ndo_schemas_json['schemas']:
-            if schema['id'] == src_epgs[0]['schemaId']:
-                for tmpl in schema['templates']:
-                    if tmpl['templateID'] == src_epgs[0]['templId']:
-                        bd_tmpl_id = src_epgs[0]['bdTemplId']
-                        src_bd_tmpl_data = tmpl['bds'][bd_tmpl_id]
+        # Verify that the amount of src and dst EPGs are the same
+        # Quit the program if the values don't match
+        try:
+            assert len(src_epgs) == len(dst_epgs)
+            log.info("Length of source and destination EPG data matches")
+        except AssertionError as e:
+            log.error("Source and destination EPG quantities don't match...Exiting")
+            sys.exit()
 
-                        anp_tmpl_id = src_epgs[0]['anpTemplId']
-                        epg_tmpl_id = src_epgs[0]['epgTemplId']
-                        src_epg_tmpl_data = tmpl['anps'][anp_tmpl_id]['epgs'][epg_tmpl_id]
+        items = len(src_epgs)
+        for i in range(items):
+            # Iterate through the schemas to get configuration parameters for dst tenant objects
+            for schema in ndo_schemas_json['schemas']:
+                if schema['id'] == src_epgs[i]['schemaId']:
+                    for tmpl in schema['templates']:
+                        if tmpl['templateID'] == src_epgs[i]['templId']:
+                            bd_tmpl_id = src_epgs[i]['bdTemplId']
+                            src_bd_tmpl_data = tmpl['bds'][bd_tmpl_id]
 
-                for site in schema['sites']:
-                    if site['siteId'] == src_epgs[0]['siteId']:
-                        bd_site_id = src_epgs[0]['bdSiteId']
-                        src_bd_site_data = site['bds'][bd_site_id]
+                            anp_tmpl_id = src_epgs[i]['anpTemplId']
+                            epg_tmpl_id = src_epgs[i]['epgTemplId']
+                            src_epg_tmpl_data = tmpl['anps'][anp_tmpl_id]['epgs'][epg_tmpl_id]
 
-                        anp_site_id = src_epgs[0]['anpSiteId']
-                        epg_site_id = src_epgs[0]['epgSiteId']
-                        src_epg_site_data = site['anps'][anp_site_id]['epgs'][epg_site_id]
+                    for site in schema['sites']:
+                        if site['siteId'] == src_epgs[i]['siteId']:
+                            bd_site_id = src_epgs[i]['bdSiteId']
+                            src_bd_site_data = site['bds'][bd_site_id]
 
-        dst_bd_tmpl_data: dict = ndo_bd_tmpl_dict
-        dst_bd_site_data: dict = ndo_bd_site_dict
+                            anp_site_id = src_epgs[i]['anpSiteId']
+                            epg_site_id = src_epgs[i]['epgSiteId']
+                            src_epg_site_data = site['anps'][anp_site_id]['epgs'][epg_site_id]
 
-        # Create dictionaries for destination BD template and site data:
-        if src_bd_tmpl_data['l2Stretch'] is True:
-            for key, value in dst_bd_tmpl_data.items():
-                dst_bd_tmpl_data[key] = src_bd_tmpl_data[key]
+            # Create dictionaries based on the templates
+            dst_bd_tmpl_data: dict = ndo_bd_tmpl_dict
+            dst_bd_site_data: dict = ndo_bd_site_dict
 
-            for key, value in dst_bd_site_data.items():
-                dst_bd_site_data[key] = src_bd_site_data[key]
+            # Create dictionaries for destination BD template and site data:
+            # If the src BD is NOT stretched
+            if src_bd_tmpl_data['l2Stretch'] is True:
+                try:
+                    vmac = src_bd_tmpl_data['vmac']
+                except KeyError as e:
+                    log.debug("Src BD data does not have a vMAC configured")
+                    src_bd_tmpl_data.setdefault("vmac", "")
+                for key, value in dst_bd_tmpl_data.items():
+                    dst_bd_tmpl_data[key] = src_bd_tmpl_data[key]
 
-        elif src_bd_tmpl_data['l2Stretch'] is False:
-            for key, value in dst_bd_tmpl_data.items():
-                dst_bd_tmpl_data[key] = src_bd_tmpl_data[key]
-            dst_bd_tmpl_data['arpFlood'] = True
-            dst_bd_tmpl_data['intersiteBumTrafficAllow'] = True
-            dst_bd_tmpl_data['l2Stretch'] = True
-            dst_bd_tmpl_data['optimizeWanBandwidth'] = True
-            dst_bd_tmpl_data['subnets'] = src_bd_site_data['subnets']
+                for key, value in dst_bd_site_data.items():
+                    dst_bd_site_data[key] = src_bd_site_data[key]
 
-            for key, value in dst_bd_site_data.items():
-                dst_bd_site_data[key] = src_bd_site_data[key]
+            # If the src BD is stretched
+            elif src_bd_tmpl_data['l2Stretch'] is False:
+                try:
+                    vmac = src_bd_tmpl_data['vmac']
+                except KeyError as e:
+                    log.debug("Src BD data does not have a vMAC configured")
+                    src_bd_tmpl_data.setdefault("vmac", "")
+                for key, value in dst_bd_tmpl_data.items():
+                    dst_bd_tmpl_data[key] = src_bd_tmpl_data[key]
+                dst_bd_tmpl_data['arpFlood'] = True
+                dst_bd_tmpl_data['intersiteBumTrafficAllow'] = True
+                dst_bd_tmpl_data['l2Stretch'] = True
+                dst_bd_tmpl_data['optimizeWanBandwidth'] = True
+                dst_bd_tmpl_data['subnets'] = src_bd_site_data['subnets']
 
-        l3outs = [dst_epgs[0]['bdL3Out1'], dst_epgs[0]['bdL3Out2']]
-        l3out_refs = [dst_epgs[0]['bdL3OutRef1'], dst_epgs[0]['bdL3OutRef2']]
-        dst_bd_site_data['l3Outs'] = l3outs
-        dst_bd_site_data['l3OutRefs'] = l3out_refs
-        dst_bd_tmpl_data['name'] = dst_epgs[0]['bdName']
-        dst_bd_tmpl_data['displayName'] = dst_epgs[0]['bdName']
-        dst_bd_tmpl_data['vrfRef'] = dst_epgs[0]['vrfRef']
+                for key, value in dst_bd_site_data.items():
+                    dst_bd_site_data[key] = src_bd_site_data[key]
 
-        for subnet in dst_bd_tmpl_data['subnets']:
-            if subnet['ip'].startswith("10.14") and dst_epgs[0]['bdName'].startswith('WB'):
-                dst_bd_site_data['hostBasedRouting'] = True
-            elif subnet['ip'].startswith("10.17") and dst_epgs[0]['bdName'].startswith('YK'):
-                dst_bd_site_data['hostBasedRouting'] = True
-            else:
-                dst_bd_site_data['hostBasedRouting'] = False
+            l3outs = [dst_epgs[i]['bdL3Out1'], dst_epgs[i]['bdL3Out2']]
+            l3out_refs = [dst_epgs[i]['bdL3OutRef1'], dst_epgs[i]['bdL3OutRef2']]
+            dst_bd_site_data['l3Outs'] = l3outs
+            dst_bd_site_data['l3OutRefs'] = l3out_refs
+            dst_bd_tmpl_data['name'] = dst_epgs[i]['bdName']
+            dst_bd_tmpl_data['displayName'] = dst_epgs[i]['bdName']
+            dst_bd_tmpl_data['vrfRef'] = dst_epgs[i]['vrfRef']
 
-        dst_bd_ref = "/schemas/%(schm)s/templates/%(tmpl)s/bds/%(bd)s" % dict(
-            schm=dst_epgs[0]['schemaId'], tmpl=dst_epgs[0]['templName'], bd=dst_epgs[0]['bdName'])
-        dst_bd_site_data['bdRef'] = dst_bd_ref
+            for subnet in dst_bd_tmpl_data['subnets']:
+                if subnet['ip'].startswith("10.14") and dst_epgs[i]['bdName'].startswith('WB'):
+                    dst_bd_site_data['hostBasedRouting'] = True
+                elif subnet['ip'].startswith("10.17") and dst_epgs[i]['bdName'].startswith('YK'):
+                    dst_bd_site_data['hostBasedRouting'] = True
+                else:
+                    dst_bd_site_data['hostBasedRouting'] = False
 
-        # Create dictionaries for destination EPG template and site data:
-        dst_epg_tmpl_data: dict = ndo_epg_tmpl_dict
-        dst_epg_site_data: dict = ndo_epg_site_dict
-        for key, value in dst_epg_tmpl_data.items():
-            dst_epg_tmpl_data[key] = src_epg_tmpl_data[key]
+            dst_bd_ref = "/schemas/%(schm)s/templates/%(tmpl)s/bds/%(bd)s" % dict(
+                schm=dst_epgs[i]['schemaId'], tmpl=dst_epgs[i]['templName'], bd=dst_epgs[i]['bdName'])
+            dst_bd_site_data['bdRef'] = dst_bd_ref
 
-        dst_epg_tmpl_data['bdRef'] = dst_bd_site_data['bdRef']
-        dst_epg_tmpl_data['name'] = dst_epgs[0]['epgName']
-        dst_epg_tmpl_data['displayName'] = dst_epgs[0]['epgName']
-        dst_epg_tmpl_data['preferredGroup'] = True
-        contract_relationships = []
-        contract = {"contractRef": dst_epgs[0]['consContract'], "relationshipType": "consumer"}
-        contract_relationships.append(contract)
-        # dst_epg_tmpl_data['contractRelationships'] = contract_relationships
+            # Create dictionaries for destination EPG template and site data:
+            dst_epg_tmpl_data: dict = ndo_epg_tmpl_dict
+            dst_epg_site_data: dict = ndo_epg_site_dict
+            for key, value in dst_epg_tmpl_data.items():
+                dst_epg_tmpl_data[key] = src_epg_tmpl_data[key]
 
-        for key, value in dst_epg_site_data.items():
-            dst_epg_site_data[key] = src_epg_site_data[key]
-        dst_epg_site_data['epgRef'] = "%(anpR)s/epgs/%(epg)s" % dict(
-            anpR=dst_epgs[0]['anpRef'], epg=dst_epg_tmpl_data['name'])
+            dst_epg_tmpl_data['bdRef'] = dst_bd_site_data['bdRef']
+            dst_epg_tmpl_data['name'] = dst_epgs[i]['epgName']
+            dst_epg_tmpl_data['displayName'] = dst_epgs[i]['epgName']
+            dst_epg_tmpl_data['preferredGroup'] = True
+            contract_relationships = []
+            contract = {"contractRef": dst_epgs[i]['consContract'], "relationshipType": "consumer"}
+            contract_relationships.append(contract)
 
-        site_id = dst_epgs[0]['siteId']
-        schm_id = dst_epgs[0]['schemaId']
-        tmpl_name = dst_epgs[0]['templName']
+            for key, value in dst_epg_site_data.items():
+                dst_epg_site_data[key] = src_epg_site_data[key]
+            dst_epg_site_data['epgRef'] = "%(anpR)s/epgs/%(epg)s" % dict(
+                anpR=dst_epgs[i]['anpRef'], epg=dst_epg_tmpl_data['name'])
 
-        bd_ref = dst_bd_site_data['bdRef']
-        epg_ref = dst_epg_site_data['epgRef']
+            site_id = dst_epgs[i]['siteId']
+            schm_id = dst_epgs[i]['schemaId']
+            tmpl_name = dst_epgs[i]['templName']
 
-        # Create new BD on dst tenant template
-        patch_ndo_tmpl_bds(session, dst_bd_tmpl_data, bdRef=bd_ref, oper="add", **kwargs)
-        # Change parameters of new BD on dst tenant site
-        patch_ndo_site_bds(session, dst_bd_site_data, siteId=site_id, oper="replace", **kwargs)
-        # Deploy the template to the tenant for changes to take effect on APIC
-        deploy = deploy_ndo_template(session, schm=schm_id, tmpl=tmpl_name)
-        # We get the deployment taskId for completeness verification
-        deploy_id = deploy.json()['id']
-        # Verification that the new BD has been successfully created in the dst tenant
-        ndo_deploy_status_check(session, id=deploy_id)
+            bd_ref = dst_bd_site_data['bdRef']
+            epg_ref = dst_epg_site_data['epgRef']
 
-        patch_ndo_tmpl_epgs(session, dst_epg_tmpl_data, epgRef=epg_ref, oper="add", **kwargs)
-        print("EPG Template Patch")
-        patch_ndo_site_epgs(session, dst_epg_site_data, siteId=site_id, oper="replace", **kwargs)
-        print("EPG Site Patch")
+            # Create new BD on dst tenant template
+            patch_ndo_tmpl_bds(session, dst_bd_tmpl_data, bdRef=bd_ref, oper="add", **kwargs)
+            # Change configuration parameters of new BD on dst tenant site
+            patch_ndo_site_bds(session, dst_bd_site_data, siteId=site_id, oper="replace", **kwargs)
+            # Deploy the template to the tenant for changes to take effect on APIC
+            deploy = deploy_ndo_template(session, schm=schm_id, tmpl=tmpl_name)
+            # Gets the deployment taskId for completeness verification
+            deploy_id = deploy.json()['id']
+            # Verification that the new BD has been successfully created in the dst tenant
+            ndo_deploy_status_check(session, id=deploy_id)
 
-        src_schm_id = src_epgs[0]['schemaId']
-        src_tmpl_name = src_epgs[0]['templName']
-        src_site_id = src_epgs[0]['siteId']
-        empty_ports = []
-        patch_ndo_epg_static_ports(
-            session, src_epg_site_data, siteId=src_site_id, ports=empty_ports, oper="replace", **kwargs)
-        print("Patch src EPG static ports")
+            # Create the new EPG on the dst tenant template
+            patch_ndo_tmpl_epgs(session, dst_epg_tmpl_data, epgRef=epg_ref, oper="add", **kwargs)
+            # Change configuration parameters of new EPG on dst tenant site
+            patch_ndo_site_epgs(session, dst_epg_site_data, siteId=site_id, oper="replace", **kwargs)
 
-        deploy = deploy_ndo_template(session, schm=src_schm_id, tmpl=src_tmpl_name, **kwargs)
-        print("Deploy remove src EPG static ports")
-        deploy_id = deploy.json()['id']
-        ndo_deploy_status_check(session, id=deploy_id)
+            # Information of the BD/EPG that is going to be removed from the src tenant
+            src_schm_id = src_epgs[i]['schemaId']
+            src_tmpl_name = src_epgs[i]['templName']
+            src_site_id = src_epgs[i]['siteId']
+            src_bf_ref = src_bd_site_data['bdRef']
+            src_epg_ref = src_epg_site_data['epgRef']
+            # The empty list is to remove the ports from the src EPG before deploying them on the dst tenant
+            empty_ports = []
 
-        deploy = deploy_ndo_template(session, schm=schm_id, tmpl=tmpl_name)
-        print("Deploy dst EPG ")
-        deploy_id = deploy.json()['id']
-        ndo_deploy_status_check(session, id=deploy_id)
+            # Replace operation on the src tenant EPG to remove the ports from the template
+            patch_ndo_epg_static_ports(
+                session, src_epg_site_data, siteId=src_site_id, ports=empty_ports, oper="replace", **kwargs)
+            # Deploy the changes to the src tenant EPG
+            # At this point the only change is removing the static ports
+            deploy = deploy_ndo_template(session, schm=src_schm_id, tmpl=src_tmpl_name, **kwargs)
+            # Gets the deployment taskId for completeness verification
+            deploy_id = deploy.json()['id']
+            # Verification that the src EPG has been reconfigured
+            ndo_deploy_status_check(session, id=deploy_id)
+
+            # We allow time for ACI switches to completely remove old EPG data before applying the new one
+            grace_time = 2  # Grace time in secs
+            for t in trange(0, grace_time * 100, ncols=100,
+                            desc="%s sec grace time for leafs to reconfigure: " % grace_time):
+                sleep(0.01)
+
+            # Deploy the changes on the dst tenant template
+            # This will create the new EPG on the dst tenant with all the imported information from the src EPG
+            deploy = deploy_ndo_template(session, schm=schm_id, tmpl=tmpl_name)
+            # Gets the deployment taskId for completeness verification
+            deploy_id = deploy.json()['id']
+            # Verification that the dst EPG has been created on the
+            ndo_deploy_status_check(session, id=deploy_id)
+
+            # Remove the src EPG from the src tenant template
+            patch_ndo_tmpl_epgs(session, src_epg_tmpl_data, epgRef=src_epg_ref, oper="remove", **kwargs)
+            # Remove the src BD from the src tenant template
+            patch_ndo_tmpl_bds(session, src_bd_tmpl_data, bdRef=src_bf_ref, oper="remove", **kwargs)
+
+            # Deploy the changes to the template to remove the BD/EPG from the src tenant
+            deploy = deploy_ndo_template(session, schm=src_schm_id, tmpl=src_tmpl_name, **kwargs)
+            # Gets the deployment taskId for completeness verification
+            deploy_id = deploy.json()['id']
+            # Verification that the src BD/EPG has been removed successfully
+            ndo_deploy_status_check(session, id=deploy_id)
+
+            log.info("[%(i)s/%(t)s] %(name)s BD/EPG migration completed" % dict(
+                i=(i + 1), t=items, name=dst_epg_tmpl_data['name']))
+            if i < (items - 1):
+                input("Please press enter to continue to the next BD/EPG: ")
+
+        log.info("Completed migration of all BD/EPG definitions")
 
 
 if __name__ == "__main__":
