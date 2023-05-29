@@ -1,7 +1,7 @@
 # Exclude these files:
 .python-version
 *.xlsx
-*.xlsx.bckp
+*.bckp
 *.json
 
 # Do not exclude these files:
