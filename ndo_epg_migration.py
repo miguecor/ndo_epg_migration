@@ -1043,8 +1043,7 @@ def main(*args, **kwargs):
                     input("Please press enter to continue to the next BD/EPG: ")
 
             except IndexError as e:
-                log.warning("Source BD/EPG information for %(epg)s is not valid...skipping" % dict(
-                    sht=sheetname, epg=src_epgs[i]['epgName']))
+                log.warning("Source BD/EPG information for %(epg)s is not valid...skipping" % src_epgs[i]['epgName'])
 
         log.info("All rows in the migration file have been processed!")
         sleep(1)
