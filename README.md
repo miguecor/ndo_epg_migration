@@ -14,7 +14,7 @@ The script can also be run with the `--put/-p` flag to use the 'EPG Selection' w
 for the migration of BD/EPGs.  If no filename is provided with the `--filename/-f` flag, the script will look for the 
 'data.xlsx' file.
 Example:  
-`python ndo_epg_migration --put --filename <>`  
+`python ndo_epg_migration --put --filename <filename>`  
 
 Running the script with either `-g` or `-p` flags will generate a .log directory with detailed information of the script 
 process and results.
