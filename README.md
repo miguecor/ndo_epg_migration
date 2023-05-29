@@ -1,4 +1,4 @@
-# NDO_EPG_MAIGRATION
+# _NDO EPG MIGRATION_
 A script that can generate an excel file with current information of the NDO tenants, sites, schemas and templates and
 use that information as input to migrate BD/EPG pairs from one tenant to another with minimum impact to data traffic.
 
@@ -23,7 +23,7 @@ The script can also be run with the `--debug/-d` flag which will generate more v
 ___
 ### Help
 A help message is available:  
-`python ndo_migration --help`  
+`python ndo_epg_migration --help`  
 
 ___
 ### Requirements
