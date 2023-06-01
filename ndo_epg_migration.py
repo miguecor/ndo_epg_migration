@@ -962,6 +962,7 @@ def main(*args, **kwargs):
                 contract_relationships = []
                 contract = {"contractRef": dst_epgs[i]['consContract'], "relationshipType": "consumer"}
                 contract_relationships.append(contract)
+                dst_epg_tmpl_data['contractRelationships'] = contract_relationships
 
                 for key, value in dst_epg_site_data.items():
                     dst_epg_site_data[key] = src_epg_site_data[key]
