@@ -86,6 +86,8 @@ def request_logger(func):
                 log.debug(str(content.cookies)[:80])
                 return content
             elif content is not None and type(content) == Response:
+                if content.text != "":
+                    log.debug(content.text)
                 log.debug("%(method)s: %(url)s STATUS: %(status)s" % dict(
                     url=content.request.url, method=content.request.method, status=content.status_code))
                 return content
@@ -128,7 +130,7 @@ def get_ndo_tenants(session: Session, **kwargs):
     return response
 
 
-@request_logger
+# @request_logger
 def get_ndo_schemas(session: Session, **kwargs):
     url = "https://%s" % NDO_IP
     api = "/mso/api/v1/schemas"
@@ -183,6 +185,7 @@ def patch_ndo_site_bds(session: Session, data: dict, siteId="", oper="", **kwarg
                     "value": data}]
 
     response = session.patch(url + api, data=json.dumps(payload), **kwargs)
+
     response.raise_for_status()
     log.info("Site BD patch %s operation returned status code %s" % (oper, response.status_code))
     return response
@@ -289,7 +292,8 @@ def ndo_deploy_status_check(session: Session, id="", **kwargs):
         response.raise_for_status()
         task_status = response.json()['operDetails']['taskStatus']
         if task_status == "Error":
-            log.error(response.json()['operDetails']['execSiteStatus'][0]['status']['msg'][:-3])
+            # log.error(response.json()['operDetails']['execSiteStatus'][0]['status']['msg'][:-3])
+            log.error(response.json()['operDetails']['execSiteStatus'][0]['status'])
             raise RequestException("Deployment task %s failed" % id)
         log.info("Deployment task ID %s status is %s" % (id, task_status))
         sleep(0.5)
@@ -977,20 +981,25 @@ def main(*args, **kwargs):
                 epg_ref = dst_epg_site_data['epgRef']
 
                 # Create new BD on dst tenant template
-                patch_ndo_tmpl_bds(session, dst_bd_tmpl_data, bdRef=bd_ref, oper="add", **kwargs)
+                patch = patch_ndo_tmpl_bds(session, dst_bd_tmpl_data, bdRef=bd_ref, oper="add", **kwargs)
+
                 # Change configuration parameters of new BD on dst tenant site
-                patch_ndo_site_bds(session, dst_bd_site_data, siteId=site_id, oper="replace", **kwargs)
+                patch = patch_ndo_site_bds(session, dst_bd_site_data, siteId=site_id, oper="replace", **kwargs)
+
                 # Deploy the template to the tenant for changes to take effect on APIC
                 deploy = deploy_ndo_template(session, schm=schm_id, tmpl=tmpl_name)
+
                 # Gets the deployment taskId for completeness verification
                 deploy_id = deploy.json()['id']
                 # Verification that the new BD has been successfully created in the dst tenant
                 ndo_deploy_status_check(session, id=deploy_id)
 
                 # Create the new EPG on the dst tenant template
-                patch_ndo_tmpl_epgs(session, dst_epg_tmpl_data, epgRef=epg_ref, oper="add", **kwargs)
+                patch = patch_ndo_tmpl_epgs(session, dst_epg_tmpl_data, epgRef=epg_ref, oper="add", **kwargs)
+
                 # Change configuration parameters of new EPG on dst tenant site
-                patch_ndo_site_epgs(session, dst_epg_site_data, siteId=site_id, oper="replace", **kwargs)
+                patch = patch_ndo_site_epgs(session, dst_epg_site_data, siteId=site_id, oper="replace", **kwargs)
+
 
                 # Information of the BD/EPG that is going to be removed from the src tenant
                 src_schm_id = src_epgs[i]['schemaId']
@@ -1002,11 +1011,13 @@ def main(*args, **kwargs):
                 empty_ports = []
 
                 # Replace operation on the src tenant EPG to remove the ports from the template
-                patch_ndo_epg_static_ports(
+                patch = patch_ndo_epg_static_ports(
                     session, src_epg_site_data, siteId=src_site_id, ports=empty_ports, oper="replace", **kwargs)
+
                 # Deploy the changes to the src tenant EPG
                 # At this point the only change is removing the static ports
                 deploy = deploy_ndo_template(session, schm=src_schm_id, tmpl=src_tmpl_name, **kwargs)
+
                 # Gets the deployment taskId for completeness verification
                 deploy_id = deploy.json()['id']
                 # Verification that the src EPG has been reconfigured
@@ -1021,18 +1032,26 @@ def main(*args, **kwargs):
                 # Deploy the changes on the dst tenant template
                 # This will create the new EPG on the dst tenant with all the imported information from the src EPG
                 deploy = deploy_ndo_template(session, schm=schm_id, tmpl=tmpl_name)
+                log.debug(deploy.text)
+                log.debug(deploy.content)
                 # Gets the deployment taskId for completeness verification
                 deploy_id = deploy.json()['id']
                 # Verification that the dst EPG has been created on the
                 ndo_deploy_status_check(session, id=deploy_id)
 
                 # Remove the src EPG from the src tenant template
-                patch_ndo_tmpl_epgs(session, src_epg_tmpl_data, epgRef=src_epg_ref, oper="remove", **kwargs)
+                patch = patch_ndo_tmpl_epgs(session, src_epg_tmpl_data, epgRef=src_epg_ref, oper="remove", **kwargs)
+                log.debug(patch.text)
+                log.debug(patch.content)
                 # Remove the src BD from the src tenant template
-                patch_ndo_tmpl_bds(session, src_bd_tmpl_data, bdRef=src_bf_ref, oper="remove", **kwargs)
+                patch = patch_ndo_tmpl_bds(session, src_bd_tmpl_data, bdRef=src_bf_ref, oper="remove", **kwargs)
+                log.debug(patch.text)
+                log.debug(patch.content)
 
                 # Deploy the changes to the template to remove the BD/EPG from the src tenant
                 deploy = deploy_ndo_template(session, schm=src_schm_id, tmpl=src_tmpl_name, **kwargs)
+                log.debug(deploy.text)
+                log.debug(deploy.content)
                 # Gets the deployment taskId for completeness verification
                 deploy_id = deploy.json()['id']
                 # Verification that the src BD/EPG has been removed successfully

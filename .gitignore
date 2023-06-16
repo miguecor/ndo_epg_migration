@@ -1,4 +1,5 @@
 # Exclude these files:
+.DS_Store
 .python-version
 *.xlsx
 *.bckp
